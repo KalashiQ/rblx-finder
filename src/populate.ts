@@ -5,6 +5,7 @@ import { initSchema, upsertGame, upsertGameWithStatus, getGameCount } from './db
 import { fetchGamesByLetter, fetchGamesByLetterPage } from './rotrends';
 import { closeBrowser } from './browser';
 import { isParsing } from './parsing-state';
+import TelegramBot from 'node-telegram-bot-api';
 
 const logger = pino({ 
   level: 'warn',
@@ -22,6 +23,31 @@ const logger = pino({
 const LETTERS = [
   'а','б','в','г','д','е','ж','з','и','й','к','л','м','н','о','п','р','с','т','у','ф','х','ц','ч','ш','щ','ъ','ы','ь','э','ю','я'
 ];
+
+// Переменные для отслеживания прогресса
+let progressCallback: ((progress: ProgressInfo) => void) | null = null;
+
+export interface ProgressInfo {
+  currentLetter: string;
+  letterIndex: number;
+  totalLetters: number;
+  currentPage: number;
+  totalGames: number;
+  newGames: number;
+  updatedGames: number;
+  errors: number;
+  isComplete: boolean;
+}
+
+export function setProgressCallback(callback: (progress: ProgressInfo) => void) {
+  progressCallback = callback;
+}
+
+function updateProgress(progress: ProgressInfo) {
+  if (progressCallback) {
+    progressCallback(progress);
+  }
+}
 
 export async function populateByLetters(): Promise<void> {
   const limit = pLimit(config.CONCURRENCY);
@@ -101,10 +127,24 @@ export async function parseNewGames(): Promise<{
     
     console.log(`📝 Обрабатываем букву "${letter}" (${i + 1}/${LETTERS.length})`);
     
+    // Отправляем обновление прогресса
+    updateProgress({
+      currentLetter: letter,
+      letterIndex: i + 1,
+      totalLetters: LETTERS.length,
+      currentPage: 1,
+      totalGames,
+      newGames,
+      updatedGames,
+      errors,
+      isComplete: false
+    });
+    
     try {
       let page = 1;
       let emptyPagesCount = 0;
       const maxEmptyPages = 3; // Максимум 3 пустые страницы подряд
+      const processedPages = new Set<number>(); // Отслеживаем обработанные страницы
       
       for (;;) {
         // Проверяем флаг отмены перед каждой страницей
@@ -113,7 +153,30 @@ export async function parseNewGames(): Promise<{
           break;
         }
         
+        // Проверяем, не обрабатывали ли мы уже эту страницу
+        if (processedPages.has(page)) {
+          console.log(`⚠️ Страница ${page} для буквы "${letter}" уже обработана, пропускаем`);
+          page++;
+          continue;
+        }
+        
         console.log(`📄 Обрабатываем страницу ${page} для буквы "${letter}"`);
+        
+        // Отмечаем страницу как обработанную
+        processedPages.add(page);
+        
+        // Обновляем прогресс с текущей страницей
+        updateProgress({
+          currentLetter: letter,
+          letterIndex: i + 1,
+          totalLetters: LETTERS.length,
+          currentPage: page,
+          totalGames,
+          newGames,
+          updatedGames,
+          errors,
+          isComplete: false
+        });
         
         let pageGames: any[] = [];
         try {
@@ -143,12 +206,12 @@ export async function parseNewGames(): Promise<{
         
         totalGames += pageGames.length;
         
-        await Promise.all(
+        const processedGames = await Promise.all(
           pageGames.map((g) =>
             limit(async () => {
               // Проверяем флаг отмены перед обработкой каждой игры
               if (!isParsing) {
-                return;
+                return null;
               }
               
               try {
@@ -160,13 +223,39 @@ export async function parseNewGames(): Promise<{
                 } else {
                   updatedGames++;
                 }
+                return result;
               } catch (e) {
                 errors++;
                 logger.warn({ source_id: g.source_id, err: (e as Error).message }, 'Failed to process game');
+                return null;
               }
             })
           )
         );
+        
+        // Подсчитываем успешно обработанные игры
+        const successfulGames = processedGames.filter(g => g !== null).length;
+        const failedGames = pageGames.length - successfulGames;
+        
+        console.log(`📊 Страница ${page} для буквы "${letter}": ${pageGames.length} найдено, ${successfulGames} записано, ${failedGames} ошибок`);
+        
+        if (failedGames > 0) {
+          console.log(`⚠️ Ошибки на странице ${page}: ${failedGames} игр не записались`);
+        }
+        
+        // Обновляем прогресс после обработки игр
+        updateProgress({
+          currentLetter: letter,
+          letterIndex: i + 1,
+          totalLetters: LETTERS.length,
+          currentPage: page,
+          totalGames,
+          newGames,
+          updatedGames,
+          errors,
+          isComplete: false
+        });
+        
         page += 1;
       }
     } catch (e) {
@@ -177,6 +266,19 @@ export async function parseNewGames(): Promise<{
   
   // Получаем реальное количество игр в базе данных
   const realGameCount = await getGameCount();
+  
+  // Финальное обновление прогресса
+  updateProgress({
+    currentLetter: '',
+    letterIndex: LETTERS.length,
+    totalLetters: LETTERS.length,
+    currentPage: 0,
+    totalGames,
+    newGames,
+    updatedGames,
+    errors,
+    isComplete: true
+  });
   
   console.log(`✅ Парсинг завершен! Обработано: ${totalGames}, новых: ${newGames}, обновлено: ${updatedGames}, ошибок: ${errors}`);
   

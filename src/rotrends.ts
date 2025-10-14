@@ -102,10 +102,10 @@ export async function fetchGamesByLetter(letter: string, pageSize = 100): Promis
       const navUrl = page.url();
       const title = await page.title();
       logger.info({ navUrl, title }, '📄 Page loaded');
-      await page.waitForTimeout(2000); // Увеличиваем таймаут
+      await page.waitForTimeout(3000); // Увеличиваем таймаут для стабилизации
     // Try to consume JSON from XHR
     const json = await waitForGamesJson(page);
-    logger.info({ hasJson: !!json, jsonType: typeof json }, '📊 JSON response status');
+    logger.info({ hasJson: !!json, jsonType: typeof json, jsonKeys: json ? Object.keys(json) : null }, '📊 JSON response status');
     
     if (json && typeof json === 'object' && (json as any).data?.games) {
       const jsonGames = (json as any).data.games;
@@ -155,7 +155,7 @@ export async function fetchGamesByLetter(letter: string, pageSize = 100): Promis
       logger.info({ gamesCount: games.length, letter, retry: retryCount + 1 }, '✅ Final games count for letter');
       
       if (games.length === 0) {
-        logger.warn({ url, navUrl, title, retry: retryCount + 1 }, '❌ No games parsed');
+        logger.warn({ url, navUrl, title, retry: retryCount + 1, contentLength: content.length }, '❌ No games parsed');
         if (retryCount < maxRetries - 1) {
           logger.info({ letter, retry: retryCount + 1 }, '🔄 Retrying due to empty result');
           retryCount++;
@@ -205,7 +205,7 @@ export async function fetchGamesByLetterPage(
     try {
       logger.info({ url, type: 'letter_page', letter, page, pageSize, retry: retryCount + 1 }, '🔍 Navigating to rotrends page');
       await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await p.waitForTimeout(2000); // Увеличиваем таймаут
+      await p.waitForTimeout(3000); // Увеличиваем таймаут для стабилизации
     const json = await waitForGamesJson(p);
     if (json && typeof json === 'object' && (json as any).data?.games) {
       // Ждём появления ссылок на игры в DOM
@@ -253,7 +253,7 @@ export async function fetchGamesByLetterPage(
       logger.info({ gamesCount: games.length, letter, page, retry: retryCount + 1 }, '✅ Final games count for letter page');
       
       if (games.length === 0) {
-        logger.warn({ url, navUrl, title, retry: retryCount + 1 }, '❌ No games parsed for page');
+        logger.warn({ url, navUrl, title, retry: retryCount + 1, contentLength: content.length }, '❌ No games parsed for page');
         if (retryCount < maxRetries - 1) {
           logger.info({ letter, page, retry: retryCount + 1 }, '🔄 Retrying due to empty result');
           retryCount++;

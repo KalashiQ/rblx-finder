@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from './config';
-import { initSchema, getGameCount, getGames, searchGames } from './db';
-import { parseNewGames } from './populate';
+import { initSchema, getGameCount, getGames, searchGames, getDatabaseStats, clearAllGames, exportDatabaseToFile, exportGamesToJsonFile, exportGamesToCsvFile, removeDuplicateGames, checkDuplicates } from './db';
+import { parseNewGames, setProgressCallback, ProgressInfo } from './populate';
 import { initBrowser, closeBrowser } from './browser';
 import { isParsing, setParsingState, resetParsingState } from './parsing-state';
 import { 
@@ -178,6 +178,165 @@ bot.on('callback_query', async (callbackQuery) => {
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Непрерывный поиск не выполняется' });
       }
+    } else if (data === 'clear_database') {
+      // Показываем подтверждение очистки
+      const confirmKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Да, очистить', callback_data: 'confirm_clear_database' },
+              { text: '❌ Отмена', callback_data: 'cancel_clear_database' }
+            ]
+          ]
+        }
+      };
+      
+      await bot.editMessageText('⚠️ ВНИМАНИЕ!\n\nВы действительно хотите очистить всю базу данных?\n\nЭто действие необратимо и удалит ВСЕ игры из базы!', {
+        chat_id: chatId,
+        message_id: messageId,
+        ...confirmKeyboard
+      });
+    } else if (data === 'confirm_clear_database') {
+      try {
+        await clearAllGames();
+        
+        await bot.editMessageText('✅ База данных успешно очищена!\n\nВсе игры удалены из базы.', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+        // Отправляем основную клавиатуру
+        await bot.sendMessage(chatId, 'База данных очищена. Выберите другое действие:', mainKeyboard);
+      } catch (error) {
+        logger.error({ error, chatId }, 'Error clearing database');
+        await bot.editMessageText('❌ Ошибка при очистке базы данных.', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+      }
+    } else if (data === 'cancel_clear_database') {
+      // Возвращаемся к статистике
+      await handleStats(chatId, messageId);
+    } else if (data === 'refresh_stats') {
+      // Обновляем статистику
+      await handleStats(chatId, messageId);
+    } else if (data === 'check_duplicates') {
+      try {
+        const duplicateInfo = await checkDuplicates();
+        
+        let message = `🔍 Проверка дубликатов:\n\n`;
+        message += `📊 Всего записей: ${duplicateInfo.total}\n`;
+        message += `🔄 Дубликатов: ${duplicateInfo.duplicates}\n`;
+        message += `✅ Уникальных: ${duplicateInfo.total - duplicateInfo.duplicates}\n\n`;
+        
+        if (duplicateInfo.duplicates > 0) {
+          message += `⚠️ Найдены дубликаты! Используйте кнопку "🧹 Удалить дубликаты" для очистки.`;
+        } else {
+          message += `✅ Дубликатов не найдено!`;
+        }
+        
+        await bot.editMessageText(message, {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+        await bot.answerCallbackQuery(callbackQuery.id, { 
+          text: duplicateInfo.duplicates > 0 ? `⚠️ Найдено ${duplicateInfo.duplicates} дубликатов` : '✅ Дубликатов не найдено'
+        });
+      } catch (error) {
+        logger.error({ error, chatId }, 'Error checking duplicates');
+        await bot.editMessageText('❌ Ошибка при проверке дубликатов.', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при проверке дубликатов' });
+      }
+    } else if (data === 'remove_duplicates') {
+      try {
+        const removedCount = await removeDuplicateGames();
+        
+        await bot.editMessageText(`✅ Дубликаты удалены!\n\n🗑️ Удалено записей: ${removedCount}\n\nОбновляю статистику...`, {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+        // Обновляем статистику после удаления дубликатов
+        setTimeout(async () => {
+          await handleStats(chatId, messageId);
+        }, 1000);
+        
+        await bot.answerCallbackQuery(callbackQuery.id, { text: `✅ Удалено ${removedCount} дубликатов` });
+      } catch (error) {
+        logger.error({ error, chatId }, 'Error removing duplicates');
+        await bot.editMessageText('❌ Ошибка при удалении дубликатов.', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при удалении дубликатов' });
+      }
+    } else if (data === 'export_db') {
+      try {
+        const filePath = await exportDatabaseToFile();
+        
+        // Отправляем файл как документ
+        await bot.sendDocument(chatId, filePath, {
+          caption: `🗄️ Экспорт базы данных в SQLite\n\n📅 Дата экспорта: ${new Date().toLocaleDateString('ru-RU')}\n\n💡 Этот файл можно открыть в любом SQLite браузере`
+        });
+        
+        // Удаляем временный файл после отправки
+        setTimeout(() => {
+          require('fs').unlink(filePath, (err: any) => {
+            if (err) logger.error({ error: err, filePath }, 'Error deleting temp file');
+          });
+        }, 5000);
+        
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ .db файл отправлен!' });
+      } catch (error) {
+        logger.error({ error, chatId }, 'Error exporting database');
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при экспорте .db файла' });
+      }
+    } else if (data === 'export_json') {
+      try {
+        const filePath = await exportGamesToJsonFile();
+        
+        // Отправляем файл как документ
+        await bot.sendDocument(chatId, filePath, {
+          caption: `📤 Экспорт базы данных в JSON\n\n📅 Дата экспорта: ${new Date().toLocaleDateString('ru-RU')}`
+        });
+        
+        // Удаляем временный файл после отправки
+        setTimeout(() => {
+          require('fs').unlink(filePath, (err: any) => {
+            if (err) logger.error({ error: err, filePath }, 'Error deleting temp file');
+          });
+        }, 5000);
+        
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ JSON файл отправлен!' });
+      } catch (error) {
+        logger.error({ error, chatId }, 'Error exporting JSON');
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при экспорте JSON' });
+      }
+    } else if (data === 'export_csv') {
+      try {
+        const filePath = await exportGamesToCsvFile();
+        
+        // Отправляем файл как документ
+        await bot.sendDocument(chatId, filePath, {
+          caption: `📊 Экспорт базы данных в CSV\n\n📅 Дата экспорта: ${new Date().toLocaleDateString('ru-RU')}`
+        });
+        
+        // Удаляем временный файл после отправки
+        setTimeout(() => {
+          require('fs').unlink(filePath, (err: any) => {
+            if (err) logger.error({ error: err, filePath }, 'Error deleting temp file');
+          });
+        }, 5000);
+        
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ CSV файл отправлен!' });
+      } catch (error) {
+        logger.error({ error, chatId }, 'Error exporting CSV');
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при экспорте CSV' });
+      }
     }
     
     // Подтверждаем получение callback
@@ -214,6 +373,28 @@ async function handleParseGames(chatId: number) {
     
     console.log('🚀 Парсинг запущен');
     
+    // Настраиваем callback для обновления прогресса
+    setProgressCallback(async (progress: ProgressInfo) => {
+      try {
+        const progressText = progress.isComplete 
+          ? `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${progress.totalGames}\n• Новых игр: ${progress.newGames}\n• Обновлено: ${progress.updatedGames}\n• Ошибок: ${progress.errors}`
+          : `🔄 Парсинг в процессе...\n\n📝 Буква: "${progress.currentLetter}" (${progress.letterIndex}/${progress.totalLetters})\n📄 Страница: ${progress.currentPage}\n\n📊 Статистика:\n• Обработано игр: ${progress.totalGames}\n• Новых игр: ${progress.newGames}\n• Обновлено: ${progress.updatedGames}\n• Ошибок: ${progress.errors}\n\n🕐 ${new Date().toLocaleTimeString('ru-RU')}`;
+        
+        await bot.editMessageText(progressText, {
+          chat_id: chatId,
+          message_id: parsingMessage.message_id,
+          reply_markup: progress.isComplete ? undefined : cancelKeyboard.reply_markup
+        });
+      } catch (error: any) {
+        // Игнорируем ошибку "message is not modified"
+        if (error.message?.includes('message is not modified')) {
+          logger.debug({ chatId }, 'Progress message not modified, skipping update');
+        } else {
+          logger.error({ error, chatId }, 'Error updating progress message');
+        }
+      }
+    });
+    
     // Инициализируем браузер
     await initBrowser();
     
@@ -222,9 +403,10 @@ async function handleParseGames(chatId: number) {
     // Сбрасываем флаги
     resetParsingState();
     
-    const message = `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${result.totalGames}\n• Новых игр: ${result.newGames}\n• Обновлено: ${result.updatedGames}\n• Ошибок: ${result.errors}\n• Всего в базе: ${result.realGameCount}`;
+    // Отправляем финальное сообщение с полной статистикой
+    const finalMessage = `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${result.totalGames}\n• Новых игр: ${result.newGames}\n• Обновлено: ${result.updatedGames}\n• Ошибок: ${result.errors}\n• Всего в базе: ${result.realGameCount}`;
     
-    await bot.sendMessage(chatId, message, mainKeyboard);
+    await bot.sendMessage(chatId, finalMessage, mainKeyboard);
     
     // Закрываем браузер
     await closeBrowser();
@@ -240,14 +422,83 @@ async function handleParseGames(chatId: number) {
 }
 
 // Функция показа статистики
-async function handleStats(chatId: number) {
+async function handleStats(chatId: number, messageId?: number) {
   try {
-    const totalGames = await getGameCount();
-    const message = `📊 Статистика базы данных:\n\n🎮 Всего игр: ${totalGames}`;
-    await bot.sendMessage(chatId, message, mainKeyboard);
+    const stats = await getDatabaseStats();
+    
+    // Форматируем даты
+    const formatDate = (dateStr: string | null) => {
+      if (!dateStr) return 'Неизвестно';
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('ru-RU', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    };
+    
+    const message = `📊 Статистика базы данных:\n\n` +
+      `🎮 Всего игр: ${stats.totalGames}\n` +
+      `💾 Размер БД: ${stats.databaseSize}\n` +
+      `📅 Самая старая игра: ${formatDate(stats.oldestGame)}\n` +
+      `📅 Самая новая игра: ${formatDate(stats.newestGame)}\n\n` +
+      `🕐 Обновлено: ${new Date().toLocaleTimeString('ru-RU')}`;
+    
+    // Создаем inline клавиатуру с кнопками
+    const statsKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🗄️ Экспорт .db', callback_data: 'export_db' },
+            { text: '📤 Экспорт JSON', callback_data: 'export_json' }
+          ],
+          [
+            { text: '📊 Экспорт CSV', callback_data: 'export_csv' }
+          ],
+          [
+            { text: '🔍 Проверить дубликаты', callback_data: 'check_duplicates' },
+            { text: '🧹 Удалить дубликаты', callback_data: 'remove_duplicates' }
+          ],
+          [
+            { text: '🗑️ Очистить всю БД', callback_data: 'clear_database' }
+          ],
+          [{ text: '🔄 Обновить статистику', callback_data: 'refresh_stats' }]
+        ]
+      }
+    };
+    
+    if (messageId) {
+      // Редактируем существующее сообщение
+      try {
+        await bot.editMessageText(message, {
+          chat_id: chatId,
+          message_id: messageId,
+          ...statsKeyboard
+        });
+      } catch (editError: any) {
+        // Если сообщение не изменилось, просто игнорируем ошибку
+        if (editError.message?.includes('message is not modified')) {
+          logger.debug({ chatId, messageId }, 'Message not modified, skipping edit');
+        } else {
+          throw editError;
+        }
+      }
+    } else {
+      // Отправляем новое сообщение
+      await bot.sendMessage(chatId, message, statsKeyboard);
+    }
   } catch (error) {
     logger.error({ error, chatId }, 'Error getting stats');
-    await bot.sendMessage(chatId, '❌ Ошибка при получении статистики.', mainKeyboard);
+    if (messageId) {
+      await bot.editMessageText('❌ Ошибка при получении статистики.', {
+        chat_id: chatId,
+        message_id: messageId
+      });
+    } else {
+      await bot.sendMessage(chatId, '❌ Ошибка при получении статистики.', mainKeyboard);
+    }
   }
 }
 
