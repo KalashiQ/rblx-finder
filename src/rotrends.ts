@@ -86,24 +86,36 @@ async function extractGamesFromDom(page: import('playwright').Page): Promise<Gam
   return items.filter((g) => g.title && g.url);
 }
 
-export async function fetchGamesByLetter(letter: string): Promise<Game[]> {
-  // Важно: rotrends ожидает не URL-энкоденную кириллицу в параметре keyword
-  const url = `https://rotrends.com/games?keyword=${letter}`;
-  const page = await newPage();
-  try {
-    logger.debug({ url, type: 'letter', letter }, 'Navigating to rotrends');
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    const navUrl = page.url();
-    const title = await page.title();
-    await page.waitForTimeout(1200);
+export async function fetchGamesByLetter(letter: string, pageSize = 100): Promise<Game[]> {
+  // Пробуем разные варианты кодировки для русских букв
+  const encodedLetter = encodeURIComponent(letter);
+  const url = `https://rotrends.com/games?keyword=${encodedLetter}&page_size=${pageSize}&sort=-playing`;
+  
+  let retryCount = 0;
+  const maxRetries = 3;
+  
+  while (retryCount < maxRetries) {
+    const page = await newPage();
+    try {
+      logger.info({ url, type: 'letter', letter, retry: retryCount + 1 }, '🔍 Navigating to rotrends for letter');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const navUrl = page.url();
+      const title = await page.title();
+      logger.info({ navUrl, title }, '📄 Page loaded');
+      await page.waitForTimeout(2000); // Увеличиваем таймаут
     // Try to consume JSON from XHR
     const json = await waitForGamesJson(page);
+    logger.info({ hasJson: !!json, jsonType: typeof json }, '📊 JSON response status');
+    
     if (json && typeof json === 'object' && (json as any).data?.games) {
+      const jsonGames = (json as any).data.games;
+      logger.info({ jsonGamesCount: jsonGames.length }, '📋 Found games in JSON response');
+      
       // Ждём появления ссылок на игры в DOM
       await page.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
       // Сначала попробуем извлечь полные ссылки из DOM
       const domGames = await extractGamesFromDom(page);
-      logger.debug({ domGamesCount: domGames.length }, 'Extracted games from DOM');
+      logger.info({ domGamesCount: domGames.length }, '🎮 Extracted games from DOM');
       if (domGames.length > 0) {
         // Сопоставляем данные из JSON с полными ссылками из DOM
         const items = (json as any).data.games as any[];
@@ -139,87 +151,61 @@ export async function fetchGamesByLetter(letter: string): Promise<Game[]> {
     await page.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
     const content = await page.content();
     logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
-    const games = (await extractGamesFromDom(page)).length ? await extractGamesFromDom(page) : parseGamesFromHtml(content);
-    if (games.length === 0) {
-      logger.warn({ url, navUrl, title }, 'No games parsed');
-    }
-    return games;
-  } finally {
-    await page.context().close();
-  }
-}
-
-export async function fetchGamesByPage(page: number, pageSize = 50): Promise<Game[]> {
-  const url = `https://rotrends.com/games?page=${page}&page_size=${pageSize}&sort=-playing`;
-  const p = await newPage();
-  try {
-    logger.debug({ url, type: 'page', page, pageSize }, 'Navigating to rotrends');
-    await p.goto(url, { waitUntil: 'domcontentloaded' });
-    await p.waitForTimeout(1200);
-    const json = await waitForGamesJson(p);
-    if (json && typeof json === 'object' && (json as any).data?.games) {
-      // Ждём появления ссылок на игры в DOM
-      await p.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
-      // Сначала попробуем извлечь полные ссылки из DOM
-      const domGames = await extractGamesFromDom(p);
-      logger.debug({ domGamesCount: domGames.length }, 'Extracted games from DOM');
-      if (domGames.length > 0) {
-        // Сопоставляем данные из JSON с полными ссылками из DOM
-        const items = (json as any).data.games as any[];
-        const mapped: Game[] = items
-          .map((g) => {
-            const gameId = String(g.place_id ?? g.game_id ?? g.id ?? '');
-            // Ищем соответствующую игру в DOM по game_id (не place_id)
-            const domGame = domGames.find(dg => dg.source_id === String(g.game_id ?? g.id ?? ''));
-            return {
-              source_id: gameId,
-              title: String(g.game_name ?? g.title ?? ''),
-              url: domGame?.url || `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
-              ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
-            };
-          })
-          .filter((g) => g.source_id && g.title && g.url);
-        if (mapped.length > 0) return mapped;
+      const games = (await extractGamesFromDom(page)).length ? await extractGamesFromDom(page) : parseGamesFromHtml(content);
+      logger.info({ gamesCount: games.length, letter, retry: retryCount + 1 }, '✅ Final games count for letter');
+      
+      if (games.length === 0) {
+        logger.warn({ url, navUrl, title, retry: retryCount + 1 }, '❌ No games parsed');
+        if (retryCount < maxRetries - 1) {
+          logger.info({ letter, retry: retryCount + 1 }, '🔄 Retrying due to empty result');
+          retryCount++;
+          await page.context().close();
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Задержка перед retry
+          continue;
+        }
+      }
+      
+      await page.context().close();
+      return games;
+      
+    } catch (error) {
+      logger.error({ letter, retry: retryCount + 1, error: (error as Error).message }, '❌ Error during parsing');
+      await page.context().close();
+      
+      if (retryCount < maxRetries - 1) {
+        logger.info({ letter, retry: retryCount + 1 }, '🔄 Retrying due to error');
+        retryCount++;
+        await new Promise(resolve => setTimeout(resolve, 3000)); // Задержка перед retry
+        continue;
       } else {
-        // Fallback к старой логике если DOM игры не найдены
-        const items = (json as any).data.games as any[];
-        const mapped: Game[] = items
-          .map((g) => ({
-            source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
-            title: String(g.game_name ?? g.title ?? ''),
-            url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
-            ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
-          }))
-          .filter((g) => g.source_id && g.title && g.url);
-        if (mapped.length > 0) return mapped;
+        logger.error({ letter, error: (error as Error).message }, '💥 Max retries exceeded');
+        throw error;
       }
     }
-    await p.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
-    const content = await p.content();
-    const navUrl = p.url();
-    const title = await p.title();
-    logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
-    const games = (await extractGamesFromDom(p)).length ? await extractGamesFromDom(p) : parseGamesFromHtml(content);
-    if (games.length === 0) {
-      logger.warn({ url, navUrl, title }, 'No games parsed');
-    }
-    return games;
-  } finally {
-    await p.context().close();
   }
+  
+  // Если дошли сюда, значит все retry исчерпаны
+  throw new Error(`Failed to parse letter "${letter}" after ${maxRetries} attempts`);
 }
+
 
 export async function fetchGamesByLetterPage(
   letter: string,
   page: number,
   pageSize = 50
 ): Promise<Game[]> {
-  const url = `https://rotrends.com/games?keyword=${letter}&page=${page}&page_size=${pageSize}&sort=-playing`;
-  const p = await newPage();
-  try {
-    logger.debug({ url, type: 'letter_page', letter, page, pageSize }, 'Navigating to rotrends');
-    await p.goto(url, { waitUntil: 'domcontentloaded' });
-    await p.waitForTimeout(1200);
+  const encodedLetter = encodeURIComponent(letter);
+  const url = `https://rotrends.com/games?keyword=${encodedLetter}&page=${page}&page_size=${pageSize}&sort=-playing`;
+  
+  let retryCount = 0;
+  const maxRetries = 3;
+  
+  while (retryCount < maxRetries) {
+    const p = await newPage();
+    try {
+      logger.info({ url, type: 'letter_page', letter, page, pageSize, retry: retryCount + 1 }, '🔍 Navigating to rotrends page');
+      await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await p.waitForTimeout(2000); // Увеличиваем таймаут
     const json = await waitForGamesJson(p);
     if (json && typeof json === 'object' && (json as any).data?.games) {
       // Ждём появления ссылок на игры в DOM
@@ -258,17 +244,43 @@ export async function fetchGamesByLetterPage(
         if (mapped.length > 0) return mapped;
       }
     }
-    await p.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
-    const content = await p.content();
-    const navUrl = p.url();
-    const title = await p.title();
-    logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
-    const games = (await extractGamesFromDom(p)).length ? await extractGamesFromDom(p) : parseGamesFromHtml(content);
-    if (games.length === 0) {
-      logger.warn({ url, navUrl, title }, 'No games parsed');
+      await p.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
+      const content = await p.content();
+      const navUrl = p.url();
+      const title = await p.title();
+      logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
+      const games = (await extractGamesFromDom(p)).length ? await extractGamesFromDom(p) : parseGamesFromHtml(content);
+      logger.info({ gamesCount: games.length, letter, page, retry: retryCount + 1 }, '✅ Final games count for letter page');
+      
+      if (games.length === 0) {
+        logger.warn({ url, navUrl, title, retry: retryCount + 1 }, '❌ No games parsed for page');
+        if (retryCount < maxRetries - 1) {
+          logger.info({ letter, page, retry: retryCount + 1 }, '🔄 Retrying due to empty result');
+          retryCount++;
+          await p.context().close();
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      }
+      
+      await p.context().close();
+      return games;
+      
+    } catch (error) {
+      logger.error({ letter, page, retry: retryCount + 1, error: (error as Error).message }, '❌ Error during page parsing');
+      await p.context().close();
+      
+      if (retryCount < maxRetries - 1) {
+        logger.info({ letter, page, retry: retryCount + 1 }, '🔄 Retrying due to error');
+        retryCount++;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        continue;
+      } else {
+        logger.error({ letter, page, error: (error as Error).message }, '💥 Max retries exceeded for page');
+        throw error;
+      }
     }
-    return games;
-  } finally {
-    await p.context().close();
   }
+  
+  throw new Error(`Failed to parse letter "${letter}" page ${page} after ${maxRetries} attempts`);
 }

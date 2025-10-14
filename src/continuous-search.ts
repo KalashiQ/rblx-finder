@@ -141,6 +141,9 @@ async function performContinuousSearch(): Promise<void> {
         let letterGames = 0;
         let letterNewGames = 0;
         
+        let emptyPagesCount = 0;
+        const maxEmptyPages = 3; // Максимум 3 пустые страницы подряд
+        
         for (;;) {
           // Проверяем, не остановлен ли поиск
           if (!isContinuousSearchRunning) {
@@ -148,11 +151,41 @@ async function performContinuousSearch(): Promise<void> {
             break;
           }
           
-          const pageGames = page === 1 ? await fetchGamesByLetter(letter) : await fetchGamesByLetterPage(letter, page);
-          if (!pageGames.length) break;
+          logger.info(`📄 Processing page ${page} for letter "${letter}"`);
+          
+          let pageGames: any[] = [];
+          try {
+            pageGames = page === 1 ? await fetchGamesByLetter(letter, 100) : await fetchGamesByLetterPage(letter, page, 100);
+            logger.info({ letter, page, count: pageGames.length }, '✅ Page parsed successfully');
+          } catch (error) {
+            logger.error({ letter, page, error: (error as Error).message }, '❌ Page parsing failed');
+            // Продолжаем с пустым массивом, чтобы не прерывать весь процесс
+            pageGames = [];
+          }
+          
+          if (!pageGames.length) {
+            emptyPagesCount++;
+            logger.warn(`⚠️ Empty page ${page} for letter "${letter}" (${emptyPagesCount}/${maxEmptyPages})`);
+            
+            if (emptyPagesCount >= maxEmptyPages) {
+              logger.info(`🛑 Stopping pagination for letter "${letter}" after ${maxEmptyPages} empty pages`);
+              break;
+            }
+            
+            page++;
+            continue;
+          }
+          
+          // Сбрасываем счетчик пустых страниц при успешном парсинге
+          emptyPagesCount = 0;
           
           letterGames += pageGames.length;
           totalGames += pageGames.length;
+          
+          // Добавляем небольшую задержку между страницами, чтобы не перегружать сайт
+          if (page > 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
           
           await Promise.all(
             pageGames.map((g) =>
@@ -186,7 +219,7 @@ async function performContinuousSearch(): Promise<void> {
           page += 1;
         }
         
-        logger.info(`✅ Letter "${letter}" completed: ${letterGames} games processed, ${letterNewGames} new games found`);
+        logger.info(`✅ Letter "${letter}" completed: ${letterGames} games processed, ${letterNewGames} new games found, ${page - 1} pages processed`);
         
       } catch (e) {
         errors++;

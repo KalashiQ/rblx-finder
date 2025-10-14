@@ -29,10 +29,29 @@ export async function populateByLetters(): Promise<void> {
     try {
       // Первая страница
       let page = 1;
+      let emptyPagesCount = 0;
+      const maxEmptyPages = 3; // Максимум 3 пустые страницы подряд
+      
       for (;;) {
-        const pageGames = page === 1 ? await fetchGamesByLetter(letter) : await fetchGamesByLetterPage(letter, page);
-        logger.info({ letter, page, count: pageGames.length }, 'Fetched games by letter/page');
-        if (!pageGames.length) break;
+        logger.info({ letter, page }, '📄 Processing page for letter');
+        const pageGames = page === 1 ? await fetchGamesByLetter(letter) : await fetchGamesByLetterPage(letter, page, 100); // Увеличиваем размер страницы
+        logger.info({ letter, page, count: pageGames.length }, '✅ Fetched games by letter/page');
+        
+        if (!pageGames.length) {
+          emptyPagesCount++;
+          logger.warn({ letter, page, emptyPagesCount, maxEmptyPages }, '⚠️ Empty page detected');
+          
+          if (emptyPagesCount >= maxEmptyPages) {
+            logger.info({ letter }, '🛑 Stopping pagination after empty pages');
+            break;
+          }
+          
+          page++;
+          continue;
+        }
+        
+        // Сбрасываем счетчик пустых страниц при успешном парсинге
+        emptyPagesCount = 0;
         await Promise.all(
           pageGames.map((g) =>
             limit(async () => {
@@ -84,6 +103,9 @@ export async function parseNewGames(): Promise<{
     
     try {
       let page = 1;
+      let emptyPagesCount = 0;
+      const maxEmptyPages = 3; // Максимум 3 пустые страницы подряд
+      
       for (;;) {
         // Проверяем флаг отмены перед каждой страницей
         if (!isParsing) {
@@ -91,8 +113,33 @@ export async function parseNewGames(): Promise<{
           break;
         }
         
-        const pageGames = page === 1 ? await fetchGamesByLetter(letter) : await fetchGamesByLetterPage(letter, page);
-        if (!pageGames.length) break;
+        console.log(`📄 Обрабатываем страницу ${page} для буквы "${letter}"`);
+        
+        let pageGames: any[] = [];
+        try {
+          pageGames = page === 1 ? await fetchGamesByLetter(letter, 100) : await fetchGamesByLetterPage(letter, page, 100);
+          console.log(`✅ Страница ${page} для буквы "${letter}": найдено ${pageGames.length} игр`);
+        } catch (error) {
+          console.error(`❌ Ошибка парсинга страницы ${page} для буквы "${letter}":`, (error as Error).message);
+          // Продолжаем с пустым массивом
+          pageGames = [];
+        }
+        
+        if (!pageGames.length) {
+          emptyPagesCount++;
+          console.log(`⚠️ Пустая страница ${page} для буквы "${letter}" (${emptyPagesCount}/${maxEmptyPages})`);
+          
+          if (emptyPagesCount >= maxEmptyPages) {
+            console.log(`🛑 Останавливаем пагинацию для буквы "${letter}" после ${maxEmptyPages} пустых страниц`);
+            break;
+          }
+          
+          page++;
+          continue;
+        }
+        
+        // Сбрасываем счетчик пустых страниц при успешном парсинге
+        emptyPagesCount = 0;
         
         totalGames += pageGames.length;
         
