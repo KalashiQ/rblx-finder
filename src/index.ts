@@ -6,7 +6,17 @@ import { initBrowser, closeBrowser } from './browser';
 import { isParsing, setParsingState, resetParsingState } from './parsing-state';
 import pino from 'pino';
 
-const logger = pino({ level: config.LOG_LEVEL });
+const logger = pino({ 
+  level: 'info',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'HH:MM:ss',
+      ignore: 'pid,hostname'
+    }
+  }
+});
 
 // Проверяем наличие токена бота
 if (!config.BOT_TOKEN) {
@@ -127,11 +137,9 @@ bot.on('callback_query', async (callbackQuery) => {
   if (!chatId || !data) return;
   
   try {
-    logger.info({ chatId, data, isParsing }, 'Callback query received');
-    
     if (data === 'cancel_parsing') {
       if (isParsing) {
-        logger.info({ chatId }, 'Cancelling parsing');
+        console.log('🛑 Парсинг отменен пользователем');
         // Устанавливаем флаг отмены
         resetParsingState();
         
@@ -183,7 +191,7 @@ async function handleParseGames(chatId: number) {
     const parsingMessage = await bot.sendMessage(chatId, '🚀 Начинаю парсинг игр с rotrends.com...\nЭто может занять несколько минут.', cancelKeyboard);
     setParsingState(true, chatId, parsingMessage.message_id);
     
-    logger.info({ chatId, messageId: parsingMessage.message_id }, 'Parsing started with cancel button');
+    console.log('🚀 Парсинг запущен');
     
     // Инициализируем браузер
     await initBrowser();
@@ -289,7 +297,7 @@ async function handleHelp(chatId: number) {
 // Функция отмены парсинга
 async function handleCancelParsing(chatId: number) {
   if (isParsing) {
-    logger.info({ chatId }, 'Cancelling parsing via button');
+    console.log('🛑 Парсинг отменен через кнопку');
     resetParsingState();
     await closeBrowser();
     await bot.sendMessage(chatId, '❌ Парсинг отменен. Выберите другое действие:', mainKeyboard);

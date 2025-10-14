@@ -6,7 +6,17 @@ import { fetchGamesByLetter, fetchGamesByLetterPage } from './rotrends';
 import { closeBrowser } from './browser';
 import { isParsing } from './parsing-state';
 
-const logger = pino({ level: config.LOG_LEVEL });
+const logger = pino({ 
+  level: 'warn',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'HH:MM:ss',
+      ignore: 'pid,hostname'
+    }
+  }
+});
 
 // Только кириллический алфавит для парсинга русских игр
 const LETTERS = [
@@ -61,19 +71,23 @@ export async function parseNewGames(): Promise<{
   const limit = pLimit(config.CONCURRENCY);
   
   // Парсинг по буквам
-  for (const letter of LETTERS) {
+  for (let i = 0; i < LETTERS.length; i++) {
+    const letter = LETTERS[i];
+    
     // Проверяем флаг отмены перед каждой буквой
     if (!isParsing) {
-      logger.info('Parsing cancelled by user');
+      console.log('🛑 Парсинг отменен пользователем');
       break;
     }
+    
+    console.log(`📝 Обрабатываем букву "${letter}" (${i + 1}/${LETTERS.length})`);
     
     try {
       let page = 1;
       for (;;) {
         // Проверяем флаг отмены перед каждой страницей
         if (!isParsing) {
-          logger.info('Parsing cancelled by user');
+          console.log('🛑 Парсинг отменен пользователем');
           break;
         }
         
@@ -116,6 +130,8 @@ export async function parseNewGames(): Promise<{
   
   // Получаем реальное количество игр в базе данных
   const realGameCount = await getGameCount();
+  
+  console.log(`✅ Парсинг завершен! Обработано: ${totalGames}, новых: ${newGames}, обновлено: ${updatedGames}, ошибок: ${errors}`);
   
   return {
     totalGames,
