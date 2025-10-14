@@ -4,6 +4,14 @@ import { initSchema, getGameCount, getGames, searchGames } from './db';
 import { parseNewGames } from './populate';
 import { initBrowser, closeBrowser } from './browser';
 import { isParsing, setParsingState, resetParsingState } from './parsing-state';
+import { 
+  setBotInstance, 
+  addChatId, 
+  isContinuousSearchActive, 
+  startContinuousSearch, 
+  stopContinuousSearch,
+  cleanup as cleanupContinuousSearch 
+} from './continuous-search';
 import pino from 'pino';
 
 const logger = pino({ 
@@ -31,7 +39,11 @@ const bot = new TelegramBot(config.BOT_TOKEN, { polling: true });
 // Инициализируем базу данных
 initSchema();
 
+// Инициализируем бота для модуля непрерывного поиска
+setBotInstance(bot);
+
 console.log('🤖 Telegram бот запущен!');
+console.log('💡 Если видите ошибку 409 Conflict, остановите другие экземпляры бота');
 
 // Создаем клавиатуру с кнопками
 const mainKeyboard = {
@@ -42,8 +54,7 @@ const mainKeyboard = {
         { text: '📊 Статистика базы' }
       ],
       [
-        { text: '🔍 Поиск игр' },
-        { text: '📋 Список игр' }
+        { text: '🔄 Непрерывный поиск' }
       ],
       [
         { text: '❓ Помощь' }
@@ -81,6 +92,9 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   
+  // Добавляем chatId для автоматических уведомлений
+  addChatId(chatId);
+  
   // Игнорируем команды (они обрабатываются выше)
   if (text && text.startsWith('/')) {
     return;
@@ -98,16 +112,12 @@ bot.on('message', async (msg) => {
         await handleStats(chatId);
         break;
         
-      case '🔍 Поиск игр':
-        await handleSearch(chatId);
-        break;
-        
-      case '📋 Список игр':
-        await handleListGames(chatId);
-        break;
-        
       case '❓ Помощь':
         await handleHelp(chatId);
+        break;
+        
+      case '🔄 Непрерывный поиск':
+        await handleStartContinuousSearch(chatId);
         break;
         
       case '❌ Отменить парсинг':
@@ -115,12 +125,8 @@ bot.on('message', async (msg) => {
         break;
         
       default:
-        // Если это не команда и не кнопка, возможно это поисковый запрос
-        if (text.length > 2) {
-          await handleSearchQuery(chatId, text);
-        } else {
-          bot.sendMessage(chatId, 'Используйте кнопки для навигации или введите поисковый запрос.', mainKeyboard);
-        }
+        // Если это не команда и не кнопка
+        bot.sendMessage(chatId, 'Используйте кнопки для навигации.', mainKeyboard);
     }
   } catch (error) {
     logger.error({ error, chatId }, 'Error handling message');
@@ -156,6 +162,21 @@ bot.on('callback_query', async (callbackQuery) => {
         await bot.sendMessage(chatId, 'Парсинг отменен. Выберите другое действие:', mainKeyboard);
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Парсинг не выполняется' });
+      }
+    } else if (data === 'stop_continuous_search') {
+      if (isContinuousSearchActive()) {
+        stopContinuousSearch();
+        
+        // Обновляем сообщение
+        await bot.editMessageText('⏹️ Непрерывный поиск остановлен!', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+        // Отправляем основную клавиатуру
+        await bot.sendMessage(chatId, 'Поиск остановлен. Выберите другое действие:', mainKeyboard);
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Непрерывный поиск не выполняется' });
       }
     }
     
@@ -230,66 +251,10 @@ async function handleStats(chatId: number) {
   }
 }
 
-// Функция поиска игр
-async function handleSearch(chatId: number) {
-  await bot.sendMessage(chatId, '🔍 Введите название игры для поиска:', {
-    reply_markup: {
-      remove_keyboard: true
-    }
-  });
-}
-
-// Функция обработки поискового запроса
-async function handleSearchQuery(chatId: number, query: string) {
-  try {
-    const games = await searchGames(query, 10);
-    
-    if (games.length === 0) {
-      await bot.sendMessage(chatId, `❌ Игры по запросу "${query}" не найдены.`, mainKeyboard);
-      return;
-    }
-    
-    let message = `🔍 Найдено игр: ${games.length}\n\n`;
-    games.forEach((game, index) => {
-      message += `${index + 1}. ${game.title}\n`;
-    });
-    
-    if (games.length >= 10) {
-      message += '\n... и другие игры';
-    }
-    
-    await bot.sendMessage(chatId, message, mainKeyboard);
-  } catch (error) {
-    logger.error({ error, chatId, query }, 'Error searching games');
-    await bot.sendMessage(chatId, '❌ Ошибка при поиске игр.', mainKeyboard);
-  }
-}
-
-// Функция показа списка игр
-async function handleListGames(chatId: number) {
-  try {
-    const games = await getGames(10);
-    
-    if (games.length === 0) {
-      await bot.sendMessage(chatId, '📋 База данных пуста. Запустите парсинг игр.', mainKeyboard);
-      return;
-    }
-    
-    let message = `📋 Последние игры (${games.length}):\n\n`;
-    games.forEach((game, index) => {
-      message += `${index + 1}. ${game.title}\n`;
-    });
-    
-    await bot.sendMessage(chatId, message, mainKeyboard);
-  } catch (error) {
-    logger.error({ error, chatId }, 'Error listing games');
-    await bot.sendMessage(chatId, '❌ Ошибка при получении списка игр.', mainKeyboard);
-  }
-}
 
 // Функция помощи
 async function handleHelp(chatId: number) {
-  const message = `❓ Помощь по боту:\n\n🎮 Парсинг новых игр - запускает парсинг всех игр с rotrends.com\n📊 Статистика базы - показывает количество игр в базе\n🔍 Поиск игр - позволяет найти игры по названию\n📋 Список игр - показывает последние добавленные игры\n\nДля поиска просто введите название игры в чат.`;
+  const message = `❓ Помощь по боту:\n\n🎮 Парсинг новых игр - запускает парсинг всех игр с rotrends.com\n📊 Статистика базы - показывает количество игр в базе\n🔄 Непрерывный поиск - запускает автоматический поиск новых игр каждые 5 минут\n\n🔔 Уведомления о новых играх приходят автоматически всем пользователям!\n\n⏹️ Для остановки непрерывного поиска используйте кнопку в сообщении о запуске.`;
   
   await bot.sendMessage(chatId, message, mainKeyboard);
 }
@@ -306,13 +271,88 @@ async function handleCancelParsing(chatId: number) {
   }
 }
 
+// Функция запуска непрерывного поиска
+async function handleStartContinuousSearch(chatId: number) {
+  try {
+    if (isContinuousSearchActive()) {
+      await bot.sendMessage(chatId, '🔄 Непрерывный поиск уже запущен!', mainKeyboard);
+      return;
+    }
+    
+    // Дополнительная проверка с небольшой задержкой
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    if (isContinuousSearchActive()) {
+      await bot.sendMessage(chatId, '🔄 Непрерывный поиск уже запущен!', mainKeyboard);
+      return;
+    }
+    
+    startContinuousSearch();
+    
+    // Создаем inline клавиатуру с кнопкой остановки
+    const stopKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⏹️ Остановить поиск', callback_data: 'stop_continuous_search' }]
+        ]
+      }
+    };
+    
+    await bot.sendMessage(chatId, '🚀 Непрерывный поиск запущен! Бот будет искать новые игры каждые 5 минут и отправлять уведомления.', stopKeyboard);
+  } catch (error) {
+    logger.error({ error, chatId }, 'Error starting continuous search');
+    await bot.sendMessage(chatId, '❌ Ошибка при запуске непрерывного поиска.', mainKeyboard);
+  }
+}
+
+// Функция остановки непрерывного поиска
+async function handleStopContinuousSearch(chatId: number) {
+  try {
+    if (!isContinuousSearchActive()) {
+      await bot.sendMessage(chatId, '⏹️ Непрерывный поиск не запущен!', mainKeyboard);
+      return;
+    }
+    
+    stopContinuousSearch();
+    await bot.sendMessage(chatId, '⏹️ Непрерывный поиск остановлен!', mainKeyboard);
+  } catch (error) {
+    logger.error({ error, chatId }, 'Error stopping continuous search');
+    await bot.sendMessage(chatId, '❌ Ошибка при остановке непрерывного поиска.', mainKeyboard);
+  }
+}
+
+
 // Обработка ошибок
 bot.on('error', (error) => {
   console.error('❌ Ошибка бота:', error);
 });
 
-bot.on('polling_error', (error) => {
-  console.error('❌ Ошибка polling:', error);
+bot.on('polling_error', (error: any) => {
+  if (error.code === 'ETELEGRAM' && error.response?.body?.error_code === 409) {
+    console.error('❌ Конфликт: уже запущен другой экземпляр бота!');
+    console.error('💡 Решение: остановите другие экземпляры бота или подождите 10 секунд');
+    console.error('🔄 Попытка переподключения через 10 секунд...');
+    
+    // Останавливаем текущий polling
+    bot.stopPolling();
+    
+    // Переподключаемся через 10 секунд
+    setTimeout(() => {
+      console.log('🔄 Переподключение к Telegram API...');
+      bot.startPolling();
+    }, 10000);
+  } else if (error.code === 'EFATAL' || error.message?.includes('ECONNRESET')) {
+    console.error('❌ Ошибка соединения с Telegram API');
+    console.error('🔄 Попытка переподключения через 5 секунд...');
+    
+    // Переподключаемся через 5 секунд при ошибках соединения
+    setTimeout(() => {
+      console.log('🔄 Переподключение к Telegram API...');
+      bot.startPolling();
+    }, 5000);
+  } else {
+    console.error('❌ Ошибка polling:', error);
+  }
 });
 
 // Graceful shutdown
@@ -322,6 +362,9 @@ process.on('SIGINT', async () => {
   
   // Сбрасываем флаги парсинга
   resetParsingState();
+  
+  // Останавливаем непрерывный поиск
+  cleanupContinuousSearch();
   
   await closeBrowser();
   process.exit(0);
@@ -333,6 +376,9 @@ process.on('SIGTERM', async () => {
   
   // Сбрасываем флаги парсинга
   resetParsingState();
+  
+  // Останавливаем непрерывный поиск
+  cleanupContinuousSearch();
   
   await closeBrowser();
   process.exit(0);

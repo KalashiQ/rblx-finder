@@ -7,7 +7,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "watch": "ts-node --watch src/index.ts"
+    "watch": "ts-node --watch src/index.ts",
+    "stop": "./stop-bot.sh",
+    "restart": "npm run stop && sleep 2 && npm run dev"
   },
   "keywords": [
     "telegram",
