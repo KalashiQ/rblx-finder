@@ -46,6 +46,12 @@ async function waitForGamesJson(
   timeoutMs = 7000
 ): Promise<unknown | null> {
   try {
+    // Проверяем, что страница не закрыта
+    if (page.isClosed()) {
+      logger.warn('Page is closed, skipping JSON wait');
+      return null;
+    }
+    
     const resp = await page.waitForResponse(
       (r) => {
         const ct = (r.headers()['content-type'] || '').toLowerCase();
@@ -63,27 +69,39 @@ async function waitForGamesJson(
       }
     });
     return data ?? null;
-  } catch {
+  } catch (error) {
+    logger.debug({ error: (error as Error).message }, 'Failed to wait for JSON response');
     return null;
   }
 }
 
 async function extractGamesFromDom(page: import('playwright').Page): Promise<Game[]> {
-  // Достаём игры прямо из DOM после выполнения JS на странице
-  const items = await page.$$eval('a[href^="/games/"], a[href^="/game/"]', (anchors) => {
-    return anchors.map((a) => {
-      const href = a.getAttribute('href') || '';
-      const titleAttr = a.getAttribute('title') || '';
-      const titleText = (a.textContent || '').trim();
-      const title = titleAttr || titleText;
-      const absoluteUrl = href.startsWith('http') ? href : `https://rotrends.com${href}`;
-      const match = absoluteUrl.match(/\/(?:games|game)\/(\d+)/);
-      const sourceId = match ? match[1] : absoluteUrl;
-      return { source_id: sourceId, title, url: absoluteUrl };
+  try {
+    // Проверяем, что страница не закрыта
+    if (page.isClosed()) {
+      logger.warn('Page is closed, cannot extract games from DOM');
+      return [];
+    }
+    
+    // Достаём игры прямо из DOM после выполнения JS на странице
+    const items = await page.$$eval('a[href^="/games/"], a[href^="/game/"]', (anchors) => {
+      return anchors.map((a) => {
+        const href = a.getAttribute('href') || '';
+        const titleAttr = a.getAttribute('title') || '';
+        const titleText = (a.textContent || '').trim();
+        const title = titleAttr || titleText;
+        const absoluteUrl = href.startsWith('http') ? href : `https://rotrends.com${href}`;
+        const match = absoluteUrl.match(/\/(?:games|game)\/(\d+)/);
+        const sourceId = match ? match[1] : absoluteUrl;
+        return { source_id: sourceId, title, url: absoluteUrl };
+      });
     });
-  });
-  // Фильтруем пустые
-  return items.filter((g) => g.title && g.url);
+    // Фильтруем пустые
+    return items.filter((g) => g.title && g.url);
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, 'Failed to extract games from DOM');
+    return [];
+  }
 }
 
 export async function fetchGamesByLetter(letter: string, pageSize = 100): Promise<Game[]> {
@@ -102,6 +120,10 @@ export async function fetchGamesByLetter(letter: string, pageSize = 100): Promis
       const navUrl = page.url();
       const title = await page.title();
       logger.info({ navUrl, title }, '📄 Page loaded');
+      // Проверяем, что страница не закрыта перед ожиданием
+      if (page.isClosed()) {
+        throw new Error('Page was closed before timeout');
+      }
       await page.waitForTimeout(3000); // Увеличиваем таймаут для стабилизации
     // Try to consume JSON from XHR
     const json = await waitForGamesJson(page);
@@ -110,6 +132,11 @@ export async function fetchGamesByLetter(letter: string, pageSize = 100): Promis
     if (json && typeof json === 'object' && (json as any).data?.games) {
       const jsonGames = (json as any).data.games;
       logger.info({ jsonGamesCount: jsonGames.length }, '📋 Found games in JSON response');
+      
+      // Проверяем, что страница не закрыта перед извлечением игр
+      if (page.isClosed()) {
+        throw new Error('Page was closed before extracting games');
+      }
       
       // Ждём появления ссылок на игры в DOM
       await page.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
@@ -147,6 +174,11 @@ export async function fetchGamesByLetter(letter: string, pageSize = 100): Promis
         if (mapped.length > 0) return mapped;
       }
     }
+    // Проверяем, что страница не закрыта перед финальным извлечением
+    if (page.isClosed()) {
+      throw new Error('Page was closed before final extraction');
+    }
+    
     // Ждём появления ссылок на игры (если данные подгружаются XHR)
     await page.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
     const content = await page.content();
@@ -205,9 +237,18 @@ export async function fetchGamesByLetterPage(
     try {
       logger.info({ url, type: 'letter_page', letter, page, pageSize, retry: retryCount + 1 }, '🔍 Navigating to rotrends page');
       await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Проверяем, что страница не закрыта перед ожиданием
+      if (p.isClosed()) {
+        throw new Error('Page was closed before timeout');
+      }
       await p.waitForTimeout(3000); // Увеличиваем таймаут для стабилизации
     const json = await waitForGamesJson(p);
     if (json && typeof json === 'object' && (json as any).data?.games) {
+      // Проверяем, что страница не закрыта перед извлечением игр
+      if (p.isClosed()) {
+        throw new Error('Page was closed before extracting games');
+      }
+      
       // Ждём появления ссылок на игры в DOM
       await p.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
       // Сначала попробуем извлечь полные ссылки из DOM
@@ -244,6 +285,11 @@ export async function fetchGamesByLetterPage(
         if (mapped.length > 0) return mapped;
       }
     }
+      // Проверяем, что страница не закрыта перед финальным извлечением
+      if (p.isClosed()) {
+        throw new Error('Page was closed before final extraction');
+      }
+      
       await p.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
       const content = await p.content();
       const navUrl = p.url();

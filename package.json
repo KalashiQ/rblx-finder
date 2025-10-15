@@ -6,8 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts",
-    "watch": "ts-node --watch src/index.ts",
+    "dev": "ts-node -r dotenv/config src/index.ts",
+    "watch": "ts-node -r dotenv/config --watch src/index.ts",
     "bot": "npm run build && npm run start",
     "stop": "./stop-bot.sh",
     "restart": "npm run stop && sleep 2 && npm run dev"
