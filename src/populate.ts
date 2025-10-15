@@ -1,7 +1,7 @@
 import pLimit from 'p-limit';
 import pino from 'pino';
 import { config } from './config';
-import { initSchema, upsertGame, upsertGameWithStatus, getGameCount } from './db';
+import { initSchema, upsertGame, upsertGameWithStatus, getGameCount, gameExistsByUrl } from './db';
 import { fetchGamesByLetter, fetchGamesByLetterPage } from './rotrends';
 import { closeBrowser } from './browser';
 import { isParsing } from './parsing-state';
@@ -35,6 +35,7 @@ export interface ProgressInfo {
   totalGames: number;
   newGames: number;
   updatedGames: number;
+  skippedGames: number;
   errors: number;
   isComplete: boolean;
 }
@@ -81,6 +82,14 @@ export async function populateByLetters(): Promise<void> {
         await Promise.all(
           pageGames.map((g) =>
             limit(async () => {
+              // Проверяем, существует ли игра с таким URL в базе данных
+              const urlExists = await gameExistsByUrl(g.url);
+              
+              if (urlExists) {
+                logger.debug({ source_id: g.source_id, url: g.url }, 'Game with URL already exists, skipping');
+                return;
+              }
+              
               const gameId = await upsertGame({ source_id: g.source_id, title: g.title, url: g.url });
               logger.debug({ gameId, source_id: g.source_id }, 'Upserted game');
             })
@@ -103,6 +112,7 @@ export async function parseNewGames(): Promise<{
   totalGames: number;
   newGames: number;
   updatedGames: number;
+  skippedGames: number;
   errors: number;
   realGameCount: number;
 }> {
@@ -111,6 +121,7 @@ export async function parseNewGames(): Promise<{
   let totalGames = 0;
   let newGames = 0;
   let updatedGames = 0;
+  let skippedGames = 0;
   let errors = 0;
   
   const limit = pLimit(config.CONCURRENCY);
@@ -136,6 +147,7 @@ export async function parseNewGames(): Promise<{
       totalGames,
       newGames,
       updatedGames,
+      skippedGames,
       errors,
       isComplete: false
     });
@@ -174,6 +186,7 @@ export async function parseNewGames(): Promise<{
           totalGames,
           newGames,
           updatedGames,
+          skippedGames,
           errors,
           isComplete: false
         });
@@ -215,6 +228,15 @@ export async function parseNewGames(): Promise<{
               }
               
               try {
+                // Проверяем, существует ли игра с таким URL в базе данных
+                const urlExists = await gameExistsByUrl(g.url);
+                
+                if (urlExists) {
+                  console.log(`⏭️ Игра с URL "${g.url}" уже существует в базе, пропускаем`);
+                  skippedGames++;
+                  return { skipped: true, reason: 'URL already exists' };
+                }
+                
                 const result = await upsertGameWithStatus({ source_id: g.source_id, title: g.title, url: g.url });
                 
                 // Правильно считаем новые и обновленные игры
@@ -234,10 +256,15 @@ export async function parseNewGames(): Promise<{
         );
         
         // Подсчитываем успешно обработанные игры
-        const successfulGames = processedGames.filter(g => g !== null).length;
-        const failedGames = pageGames.length - successfulGames;
+        const successfulGames = processedGames.filter(g => g !== null && !(g as any).skipped).length;
+        const pageSkippedGames = processedGames.filter(g => g && (g as any).skipped).length;
+        const failedGames = pageGames.length - successfulGames - pageSkippedGames;
         
-        console.log(`📊 Страница ${page} для буквы "${letter}": ${pageGames.length} найдено, ${successfulGames} записано, ${failedGames} ошибок`);
+        console.log(`📊 Страница ${page} для буквы "${letter}": ${pageGames.length} найдено, ${successfulGames} записано, ${pageSkippedGames} пропущено, ${failedGames} ошибок`);
+        
+        if (pageSkippedGames > 0) {
+          console.log(`⏭️ Пропущено ${pageSkippedGames} игр (URL уже существует в базе)`);
+        }
         
         if (failedGames > 0) {
           console.log(`⚠️ Ошибки на странице ${page}: ${failedGames} игр не записались`);
@@ -252,6 +279,7 @@ export async function parseNewGames(): Promise<{
           totalGames,
           newGames,
           updatedGames,
+          skippedGames,
           errors,
           isComplete: false
         });
@@ -276,16 +304,18 @@ export async function parseNewGames(): Promise<{
     totalGames,
     newGames,
     updatedGames,
+    skippedGames,
     errors,
     isComplete: true
   });
   
-  console.log(`✅ Парсинг завершен! Обработано: ${totalGames}, новых: ${newGames}, обновлено: ${updatedGames}, ошибок: ${errors}`);
+  console.log(`✅ Парсинг завершен! Обработано: ${totalGames}, новых: ${newGames}, обновлено: ${updatedGames}, пропущено: ${skippedGames}, ошибок: ${errors}`);
   
   return {
     totalGames,
     newGames,
     updatedGames,
+    skippedGames,
     errors,
     realGameCount
   };

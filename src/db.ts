@@ -273,6 +273,18 @@ export function checkDuplicates(): Promise<{duplicates: number, total: number}> 
   });
 }
 
+export function gameExistsByUrl(url: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT id FROM games WHERE url = ?', [url], (err, result) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(!!result);
+      }
+    });
+  });
+}
+
 export function exportGamesToJson(): Promise<string> {
   return new Promise((resolve, reject) => {
     db.all(`

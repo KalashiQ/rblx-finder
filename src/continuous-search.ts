@@ -1,7 +1,7 @@
 import pLimit from 'p-limit';
 import pino from 'pino';
 import { config } from './config';
-import { upsertGameWithStatus, getGameCount } from './db';
+import { upsertGameWithStatus, getGameCount, gameExistsByUrl } from './db';
 import { fetchGamesByLetter, fetchGamesByLetterPage } from './rotrends';
 import { closeBrowser } from './browser';
 import TelegramBot from 'node-telegram-bot-api';
@@ -118,6 +118,7 @@ async function performContinuousSearch(): Promise<void> {
   let totalGames = 0;
   let newGames = 0;
   let updatedGames = 0;
+  let skippedGames = 0;
   let errors = 0;
   const newGamesList: Array<{title: string, url: string}> = [];
   
@@ -196,6 +197,15 @@ async function performContinuousSearch(): Promise<void> {
                 }
                 
                 try {
+                  // Проверяем, существует ли игра с таким URL в базе данных
+                  const urlExists = await gameExistsByUrl(g.url);
+                  
+                  if (urlExists) {
+                    logger.info(`⏭️ Game with URL "${g.url}" already exists in database, skipping`);
+                    skippedGames++;
+                    return;
+                  }
+                  
                   const result = await upsertGameWithStatus({ source_id: g.source_id, title: g.title, url: g.url });
                   
                   if (result.isNew) {
@@ -229,7 +239,7 @@ async function performContinuousSearch(): Promise<void> {
     
     // Уведомления уже отправлены по одной игре
     
-    logger.info(`🎯 Continuous search cycle completed! Total: ${totalGames}, New: ${newGames}, Updated: ${updatedGames}, Errors: ${errors}`);
+    logger.info(`🎯 Continuous search cycle completed! Total: ${totalGames}, New: ${newGames}, Updated: ${updatedGames}, Skipped: ${skippedGames}, Errors: ${errors}`);
     
   } catch (error) {
     logger.error({ error }, 'Error during continuous search');

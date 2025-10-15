@@ -422,8 +422,8 @@ async function handleParseGames(chatId: number) {
     setProgressCallback(async (progress: ProgressInfo) => {
       try {
         const progressText = progress.isComplete 
-          ? `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${progress.totalGames}\n• Новых игр: ${progress.newGames}\n• Обновлено: ${progress.updatedGames}\n• Ошибок: ${progress.errors}`
-          : `🔄 Парсинг в процессе...\n\n📝 Буква: "${progress.currentLetter}" (${progress.letterIndex}/${progress.totalLetters})\n📄 Страница: ${progress.currentPage}\n\n📊 Статистика:\n• Обработано игр: ${progress.totalGames}\n• Новых игр: ${progress.newGames}\n• Обновлено: ${progress.updatedGames}\n• Ошибок: ${progress.errors}\n\n🕐 ${new Date().toLocaleTimeString('ru-RU')}`;
+          ? `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${progress.totalGames}\n• Новых игр: ${progress.newGames}\n• Обновлено: ${progress.updatedGames}\n• Пропущено: ${progress.skippedGames}\n• Ошибок: ${progress.errors}`
+          : `🔄 Парсинг в процессе...\n\n📝 Буква: "${progress.currentLetter}" (${progress.letterIndex}/${progress.totalLetters})\n📄 Страница: ${progress.currentPage}\n\n📊 Статистика:\n• Обработано игр: ${progress.totalGames}\n• Новых игр: ${progress.newGames}\n• Обновлено: ${progress.updatedGames}\n• Пропущено: ${progress.skippedGames}\n• Ошибок: ${progress.errors}\n\n🕐 ${new Date().toLocaleTimeString('ru-RU')}`;
         
         await bot.editMessageText(progressText, {
           chat_id: chatId,
@@ -449,7 +449,7 @@ async function handleParseGames(chatId: number) {
     resetParsingState();
     
     // Отправляем финальное сообщение с полной статистикой
-    const finalMessage = `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${result.totalGames}\n• Новых игр: ${result.newGames}\n• Обновлено: ${result.updatedGames}\n• Ошибок: ${result.errors}\n• Всего в базе: ${result.realGameCount}`;
+    const finalMessage = `✅ Парсинг завершен!\n\n📊 Результаты:\n• Всего обработано: ${result.totalGames}\n• Новых игр: ${result.newGames}\n• Обновлено: ${result.updatedGames}\n• Пропущено: ${result.skippedGames}\n• Ошибок: ${result.errors}\n• Всего в базе: ${result.realGameCount}`;
     
     await bot.sendMessage(chatId, finalMessage, mainKeyboard);
     
