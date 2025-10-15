@@ -8,4 +8,5 @@ export const config = {
   CONCURRENCY: parseInt(process.env.CONCURRENCY || '3'),
   DATABASE_PATH: process.env.DATABASE_PATH || './games.db',
   NODE_ENV: process.env.NODE_ENV || 'development',
+  ALLOWED_USER_IDS: process.env.ALLOWED_USER_IDS ? process.env.ALLOWED_USER_IDS.split(',').map(id => parseInt(id.trim())) : [],
 };

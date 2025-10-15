@@ -26,6 +26,16 @@ const logger = pino({
   }
 });
 
+// Функция проверки разрешенных пользователей
+function isUserAllowed(userId: number): boolean {
+  // Если список разрешенных пользователей пуст, доступ открыт для всех
+  if (config.ALLOWED_USER_IDS.length === 0) {
+    return true;
+  }
+  
+  return config.ALLOWED_USER_IDS.includes(userId);
+}
+
 // Проверяем наличие токена бота
 if (!config.BOT_TOKEN) {
   console.error('❌ BOT_TOKEN не найден в переменных окружения!');
@@ -68,7 +78,14 @@ const mainKeyboard = {
 // Обработчик команды /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
+  const userId = msg.from?.id;
   const firstName = msg.from?.first_name || 'Пользователь';
+  
+  // Проверяем, разрешен ли пользователь
+  if (userId && !isUserAllowed(userId)) {
+    bot.sendMessage(chatId, '❌ Доступ запрещен. Вы не имеете права использовать этого бота.');
+    return;
+  }
   
   bot.sendMessage(chatId, `Привет, ${firstName}! 👋\n\nЯ бот для парсинга игр с rotrends.com!\n\nВыберите действие:`, mainKeyboard);
 });
@@ -76,6 +93,13 @@ bot.onText(/\/start/, (msg) => {
 // Обработчик команды /help
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
+  const userId = msg.from?.id;
+  
+  // Проверяем, разрешен ли пользователь
+  if (userId && !isUserAllowed(userId)) {
+    bot.sendMessage(chatId, '❌ Доступ запрещен. Вы не имеете права использовать этого бота.');
+    return;
+  }
   
   bot.sendMessage(chatId, `📋 Справка по командам:\n\n/start - начать работу с ботом\n/help - показать эту справку\n\nИспользуйте кнопки для навигации по функциям бота.`, mainKeyboard);
 });
@@ -83,6 +107,13 @@ bot.onText(/\/help/, (msg) => {
 // Обработчик команды /ping
 bot.onText(/\/ping/, (msg) => {
   const chatId = msg.chat.id;
+  const userId = msg.from?.id;
+  
+  // Проверяем, разрешен ли пользователь
+  if (userId && !isUserAllowed(userId)) {
+    bot.sendMessage(chatId, '❌ Доступ запрещен. Вы не имеете права использовать этого бота.');
+    return;
+  }
   
   bot.sendMessage(chatId, '🏓 Pong! Бот работает нормально!');
 });
@@ -90,7 +121,14 @@ bot.onText(/\/ping/, (msg) => {
 // Обработчик кнопок
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
+  const userId = msg.from?.id;
   const text = msg.text;
+  
+  // Проверяем, разрешен ли пользователь
+  if (userId && !isUserAllowed(userId)) {
+    bot.sendMessage(chatId, '❌ Доступ запрещен. Вы не имеете права использовать этого бота.');
+    return;
+  }
   
   // Добавляем chatId для автоматических уведомлений
   addChatId(chatId);
@@ -139,8 +177,15 @@ bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message?.chat.id;
   const messageId = callbackQuery.message?.message_id;
   const data = callbackQuery.data;
+  const userId = callbackQuery.from?.id;
   
   if (!chatId || !data) return;
+  
+  // Проверяем, разрешен ли пользователь
+  if (userId && !isUserAllowed(userId)) {
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Доступ запрещен' });
+    return;
+  }
   
   try {
     if (data === 'cancel_parsing') {
